@@ -78,12 +78,35 @@ const FloorManagerPanel: React.FC<FloorManagerPanelProps> = ({
   };
 
   const deleteFloor = (floorId: string) => {
-    if (floors.length <= 1) return;
     const updated = floors.filter(f => f.id !== floorId);
-    onFloorsChange(updated);
-    if (selectedFloorId === floorId) {
-      onSelectFloor(updated[0]?.id || null);
+    if (updated.length === 0) {
+      // Auto-create a new empty floor when last one is deleted
+      const newFloor: Floor = {
+        id: `floor-${Date.now()}`,
+        name: '1F',
+        floorHeight: 3.5,
+        wwr: 0.35,
+        shapes: [{
+          id: `shape-${Date.now()}-${shapeCounter++}`,
+          type: 'box',
+          params: { width: 40, length: 30, wwr: 0.35, glassType: 'Double', shadingType: 'None' },
+          position: { x: 0, y: 0 },
+          rotation: 0,
+        }],
+      };
+      onFloorsChange([newFloor]);
+      onSelectFloor(newFloor.id);
       onSelectShape(null);
+    } else {
+      // Re-name remaining floors
+      updated.forEach((f, i) => {
+        if (!f.name.startsWith('B')) f.name = `${i + 1}F`;
+      });
+      onFloorsChange(updated);
+      if (selectedFloorId === floorId) {
+        onSelectFloor(updated[0]?.id || null);
+        onSelectShape(null);
+      }
     }
   };
 
@@ -439,7 +462,6 @@ const FloorManagerPanel: React.FC<FloorManagerPanelProps> = ({
                   <button onClick={() => moveFloor(floor.id, 'up')} className={`${btnSmClass} bg-white/5 text-slate-400 hover:bg-white/10 ${floorIdx === 0 ? 'opacity-30 pointer-events-none' : ''}`} title={t ? '下移' : 'Move Down'}>↓</button>
                   <button onClick={() => moveFloor(floor.id, 'down')} className={`${btnSmClass} bg-white/5 text-slate-400 hover:bg-white/10 ${floorIdx === floors.length - 1 ? 'opacity-30 pointer-events-none' : ''}`} title={t ? '上移' : 'Move Up'}>↑</button>
                   <button onClick={() => duplicateFloor(floor.id)} className={`${btnSmClass} bg-white/5 text-blue-400 hover:bg-blue-600/20`} title={t ? '複製樓層' : 'Duplicate Floor'}>⧉</button>
-                  <button onClick={() => deleteFloor(floor.id)} className={`${btnSmClass} bg-white/5 text-red-400 hover:bg-red-600/20 ${floors.length <= 1 ? 'opacity-30 pointer-events-none' : ''}`} title={t ? '刪除樓層' : 'Delete Floor'}>✕</button>
                   {/* Top View button */}
                   {onEnterTopView && (
                     <button
@@ -596,9 +618,17 @@ const FloorManagerPanel: React.FC<FloorManagerPanelProps> = ({
                   {/* Add shape button */}
                   <button
                     onClick={(e) => { e.stopPropagation(); addShape(floor.id); }}
-                    className="w-full py-2 border border-dashed border-white/10 rounded-lg text-[10px] font-black text-slate-400 hover:text-white hover:border-blue-500/30 hover:bg-blue-600/5 transition-all uppercase tracking-wide"
+                    className="w-full py-2 rounded-lg border border-dashed border-white/10 text-[10px] font-bold text-slate-500 hover:border-white/20 hover:text-white transition-all flex items-center justify-center gap-1"
                   >
-                    + {t ? '新增形狀' : 'Add Shape'}
+                    <span>+</span> {t ? '新增形狀' : 'Add Shape'}
+                  </button>
+
+                  {/* Delete floor button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteFloor(floor.id); }}
+                    className="w-full py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 text-[9px] font-bold text-red-400 hover:bg-red-500/15 hover:border-red-500/40 transition-all flex items-center justify-center gap-1"
+                  >
+                    <span>🗑️</span> {t ? `刪除 ${floor.name}` : `Delete ${floor.name}`}
                   </button>
                 </div>
               )}

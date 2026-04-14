@@ -95,6 +95,7 @@ const App: React.FC = () => {
   const [showFloorPanel, setShowFloorPanel] = useState(true);
   const [topViewMode, setTopViewMode] = useState<{ active: boolean; floorId: string | null }>({ active: false, floorId: null });
   const [editingFloorId, setEditingFloorId] = useState<string | null>(null);
+  const [modelingMode, setModelingMode] = useState<'parametric' | 'polyline'>('parametric');
 
   // Floor → GeometryObject[] conversion for backward compatibility with calculation engine
   const floorsToGeometryObjects = (floorList: Floor[]): GeometryObject[] => {
@@ -597,7 +598,27 @@ const App: React.FC = () => {
                       activeFloorId={topViewMode.floorId}
                       selectedShapeId={selectedShapeId}
                       onSelectShape={setSelectedShapeId}
-                      onExit={handleExitTopView}
+                      onSelectFloor={(floorId) => {
+                        setSelectedFloorId(floorId);
+                        setTopViewMode({ active: true, floorId });
+                      }}
+                      onAddFloor={() => {
+                        const newId = `floor-${Date.now()}`;
+                        const newFloor: Floor = {
+                          id: newId,
+                          name: `${floors.length + 1}F`,
+                          floorHeight: 3.5,
+                          wwr: 0.35,
+                          shapes: [],
+                        };
+                        setFloors(prev => [...prev, newFloor]);
+                        setSelectedFloorId(newId);
+                        setTopViewMode({ active: true, floorId: newId });
+                      }}
+                      onExit={() => {
+                        handleExitTopView();
+                        setModelingMode('parametric');
+                      }}
                       lang={lang}
                     />
                   )}
@@ -605,15 +626,54 @@ const App: React.FC = () => {
                   {/* Floor Manager Panel - Floating overlay inside 3D viewer */}
                   {activeTab === 'config' && (
                     <div className="absolute top-3 left-3 bottom-3 z-20 flex flex-col" style={{ width: showFloorPanel ? '300px' : 'auto' }}>
-                      {/* Toggle Button */}
-                      <button
-                        onClick={() => setShowFloorPanel(!showFloorPanel)}
-                        className="mb-1 self-start bg-slate-900/80 backdrop-blur-xl hover:bg-slate-800/90 text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all shadow-lg border border-white/10 flex items-center gap-1.5"
-                      >
-                        <span>{showFloorPanel ? '◀' : '▶'}</span>
-                        <span>{lang === 'zh' ? '樓層建模' : 'Floors'}</span>
-                        <span className="bg-blue-500/30 px-1.5 py-0.5 rounded text-[9px]">{floors.length}</span>
-                      </button>
+                      {/* Mode Selector + Toggle */}
+                      <div className="flex items-center gap-1 mb-1">
+                        <button
+                          onClick={() => setShowFloorPanel(!showFloorPanel)}
+                          className="bg-slate-900/80 backdrop-blur-xl hover:bg-slate-800/90 text-white px-2 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-lg border border-white/10"
+                        >
+                          {showFloorPanel ? '◀' : '▶'}
+                        </button>
+                        {showFloorPanel && (
+                          <div className="flex bg-slate-900/80 backdrop-blur-xl rounded-lg shadow-lg border border-white/10 p-0.5 flex-1">
+                            <button
+                              onClick={() => {
+                                setModelingMode('parametric');
+                                setTopViewMode({ active: false, floorId: null });
+                              }}
+                              className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wide transition-all ${
+                                modelingMode === 'parametric'
+                                  ? 'bg-blue-600 text-white shadow-md'
+                                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+                              }`}
+                            >
+                              <span>🏢</span>
+                              <span>{lang === 'zh' ? '樓層建模' : 'Parametric'}</span>
+                              <span className={`px-1 py-0.5 rounded text-[8px] ${
+                                modelingMode === 'parametric' ? 'bg-white/20' : 'bg-white/5'
+                              }`}>{floors.length}</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setModelingMode('polyline');
+                                const floorId = selectedFloorId || floors[0]?.id;
+                                if (floorId) {
+                                  setSelectedFloorId(floorId);
+                                  setTopViewMode({ active: true, floorId });
+                                }
+                              }}
+                              className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wide transition-all ${
+                                modelingMode === 'polyline'
+                                  ? 'bg-emerald-600 text-white shadow-md'
+                                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+                              }`}
+                            >
+                              <span>✏️</span>
+                              <span>{lang === 'zh' ? 'Polyline 建模' : 'Polyline'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
 
                       {/* Panel Content */}
                       {showFloorPanel && (
@@ -622,10 +682,15 @@ const App: React.FC = () => {
                             floors={floors}
                             onFloorsChange={setFloors}
                             selectedFloorId={selectedFloorId}
-                            onSelectFloor={setSelectedFloorId}
+                            onSelectFloor={(floorId) => {
+                              setSelectedFloorId(floorId);
+                              if (modelingMode === 'polyline') {
+                                setTopViewMode({ active: true, floorId });
+                              }
+                            }}
                             selectedShapeId={selectedShapeId}
                             onSelectShape={setSelectedShapeId}
-                            onEnterTopView={handleEnterTopView}
+                            onEnterTopView={modelingMode === 'parametric' ? handleEnterTopView : undefined}
                             lang={lang}
                           />
                         </div>

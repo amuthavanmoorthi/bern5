@@ -7,6 +7,8 @@ interface TopViewCanvasProps {
   activeFloorId: string;
   selectedShapeId: string | null;
   onSelectShape: (shapeId: string | null) => void;
+  onSelectFloor?: (floorId: string) => void;
+  onAddFloor?: () => void;
   onExit: () => void;
   lang: 'zh' | 'en';
 }
@@ -81,7 +83,7 @@ const pointInPolygon = (px: number, py: number, pts: PolylinePoint[]): boolean =
 };
 
 const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
-  floors, onFloorsChange, activeFloorId, selectedShapeId, onSelectShape, onExit, lang
+  floors, onFloorsChange, activeFloorId, selectedShapeId, onSelectShape, onSelectFloor, onAddFloor, onExit, lang
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -214,11 +216,77 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
       ctx.beginPath(); ctx.moveTo(0, originY); ctx.lineTo(W, originY); ctx.stroke();
     }
 
-    // Draw existing built-in shapes (non-polyline) as grey outlines
+    // Draw reference floors (below active floor) as transparent outlines
+    const activeFloorIdx = floors.findIndex(f => f.id === activeFloorId);
+    for (let fi = 0; fi < floors.length; fi++) {
+      if (fi === activeFloorIdx) continue; // skip active floor, draw it separately
+      const refFloor = floors[fi];
+      const isBelow = fi < activeFloorIdx;
+      const alpha = isBelow ? 0.25 : 0.12;
+      const color = isBelow ? '59, 130, 246' : '148, 163, 184';
+
+      refFloor.shapes.forEach(shape => {
+        if (shape.type === 'polyline' && shape.params.isClosed && shape.params.points) {
+          const pts = shape.params.points;
+          if (pts.length < 3) return;
+          ctx.beginPath();
+          const [fx, fy] = worldToScreen(pts[0].x, pts[0].y);
+          ctx.moveTo(fx, fy);
+          for (let i = 1; i < pts.length; i++) {
+            const [px, py] = worldToScreen(pts[i].x, pts[i].y);
+            ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.fillStyle = `rgba(${color}, ${alpha * 0.3})`;
+          ctx.fill();
+          ctx.strokeStyle = `rgba(${color}, ${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else if (shape.type !== 'polyline') {
+          // Draw bounding box for built-in shapes
+          const p = shape.params;
+          let w = p.width || p.l1 || (p.radius ? p.radius * 2 : 0) || (p.majorRadius ? p.majorRadius * 2 : 0) || (p.circumradius ? p.circumradius * 2 : 0) || 30;
+          let h = p.length || p.w1 || (p.radius ? p.radius * 2 : 0) || (p.minorRadius ? p.minorRadius * 2 : 0) || (p.circumradius ? p.circumradius * 2 : 0) || 30;
+          const cx = shape.position.x;
+          const cy = shape.position.y;
+          const [sx, sy] = worldToScreen(cx - w / 2, cy + h / 2);
+          const [ex, ey] = worldToScreen(cx + w / 2, cy - h / 2);
+          ctx.fillStyle = `rgba(${color}, ${alpha * 0.2})`;
+          ctx.fillRect(sx, sy, ex - sx, ey - sy);
+          ctx.strokeStyle = `rgba(${color}, ${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(sx, sy, ex - sx, ey - sy);
+          ctx.setLineDash([]);
+        }
+      });
+
+      // Floor label for reference floors
+      if (refFloor.shapes.length > 0) {
+        const firstShape = refFloor.shapes[0];
+        let lx = 0, ly = 0;
+        if (firstShape.type === 'polyline' && firstShape.params.points?.length) {
+          const pts = firstShape.params.points;
+          lx = pts.reduce((s: number, p: PolylinePoint) => s + p.x, 0) / pts.length;
+          ly = pts.reduce((s: number, p: PolylinePoint) => s + p.y, 0) / pts.length;
+        } else {
+          lx = firstShape.position.x;
+          ly = firstShape.position.y;
+        }
+        const [slx, sly] = worldToScreen(lx, ly);
+        ctx.fillStyle = `rgba(${color}, ${alpha * 1.5})`;
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(refFloor.name, slx, sly + 4);
+      }
+    }
+
+    // Draw existing built-in shapes (non-polyline) on ACTIVE floor as grey outlines
     if (activeFloor) {
       activeFloor.shapes.forEach(shape => {
         if (shape.type === 'polyline') return;
-        // Simple representation: draw bounding box for built-in shapes
         const p = shape.params;
         let w = p.width || p.l1 || (p.radius ? p.radius * 2 : 0) || (p.majorRadius ? p.majorRadius * 2 : 0) || (p.circumradius ? p.circumradius * 2 : 0) || 30;
         let h = p.length || p.w1 || (p.radius ? p.radius * 2 : 0) || (p.minorRadius ? p.minorRadius * 2 : 0) || (p.circumradius ? p.circumradius * 2 : 0) || 30;
@@ -234,7 +302,6 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
         ctx.strokeRect(sx, sy, ex - sx, ey - sy);
         ctx.setLineDash([]);
 
-        // Label
         ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'center';
@@ -734,12 +801,34 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
 
         <div className="flex-1" />
 
-        {/* Floor info */}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-black text-blue-400">
-            📐 {activeFloor?.name || '?'} — Top View
-          </span>
-          <span className="text-[10px] text-slate-500">
+        {/* Floor Switcher */}
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] font-black text-slate-500 mr-1">{t ? '樓層' : 'Floor'}:</span>
+          <div className="flex bg-slate-800 rounded-lg p-0.5 gap-0.5">
+            {floors.map((f, idx) => (
+              <button
+                key={f.id}
+                onClick={() => onSelectFloor?.(f.id)}
+                className={`px-2 py-1 rounded-md text-[9px] font-black transition-all ${
+                  f.id === activeFloorId
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                {f.name}
+              </button>
+            ))}
+            {onAddFloor && (
+              <button
+                onClick={onAddFloor}
+                className="px-2 py-1 rounded-md text-[9px] font-black text-emerald-400 hover:bg-emerald-600/20 transition-all"
+                title={t ? '新增樓層' : 'Add Floor'}
+              >
+                +
+              </button>
+            )}
+          </div>
+          <span className="text-[10px] text-slate-500 ml-1">
             {polylineShapes.length} {t ? '個輪廓' : 'outlines'}
           </span>
         </div>
