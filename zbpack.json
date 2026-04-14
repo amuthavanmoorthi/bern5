@@ -1,4 +1,5 @@
 {
   "build_command": "npm install && npm run build",
-  "output_dir": "dist"
+  "output_dir": "dist",
+  "port": 80
 }
