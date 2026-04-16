@@ -114,17 +114,20 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
   // Panning state
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState<{ x: number; y: number; offX: number; offY: number } | null>(null);
+  const wasPanningRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
 
   const activeFloor = floors.find(f => f.id === activeFloorId);
   const polylineShapes = activeFloor?.shapes.filter(s => s.type === 'polyline' && s.params.isClosed) || [];
   const selectedShape = activeFloor?.shapes.find(s => s.id === selectedShapeId && s.type === 'polyline');
 
-  // Coordinate transforms
+  // Coordinate transforms (CSS pixel space — canvas uses setTransform(dpr,...))
   const worldToScreen = useCallback((wx: number, wy: number): [number, number] => {
     const canvas = canvasRef.current;
     if (!canvas) return [0, 0];
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const dpr = window.devicePixelRatio || 1;
+    const cx = canvas.width / dpr / 2;
+    const cy = canvas.height / dpr / 2;
     return [
       cx + (wx * view.scale) + view.offsetX,
       cy - (wy * view.scale) + view.offsetY // Y flipped
@@ -134,8 +137,9 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
   const screenToWorld = useCallback((sx: number, sy: number): PolylinePoint => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const dpr = window.devicePixelRatio || 1;
+    const cx = canvas.width / dpr / 2;
+    const cy = canvas.height / dpr / 2;
     return {
       x: (sx - cx - view.offsetX) / view.scale,
       y: -(sy - cy - view.offsetY) / view.scale // Y flipped
@@ -470,11 +474,12 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || (e.button === 0 && e.altKey && mode === 'select' && !selectedShape)) {
-      // Middle button or alt+click for panning
+    // Pan: middle-click, right-click, Alt+left-click, or space+left-click
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && (e.altKey || spaceHeld))) {
       const pos = getCanvasPos(e);
       setIsPanning(true);
       setPanStart({ x: pos.x, y: pos.y, offX: view.offsetX, offY: view.offsetY });
+      e.preventDefault();
       return;
     }
 
@@ -595,6 +600,7 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
 
   const handleMouseUp = () => {
     if (isPanning) {
+      wasPanningRef.current = true;
       setIsPanning(false);
       setPanStart(null);
       return;
@@ -605,6 +611,11 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
   };
 
   const handleClick = (e: React.MouseEvent) => {
+    // Suppress click that fires right after a pan ends
+    if (wasPanningRef.current) {
+      wasPanningRef.current = false;
+      return;
+    }
     if (isPanning || dragNodeIdx !== null || dragShape) return;
     if (mode !== 'draw') return;
     if (e.button !== 0) return;
@@ -647,6 +658,13 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
   // Keyboard handlers
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Space held for pan
+      if (e.key === ' ' && !e.repeat) {
+        e.preventDefault();
+        setSpaceHeld(true);
+        return;
+      }
+
       if (showExtrudeDialog) return;
 
       if (e.key === 'Escape') {
@@ -700,28 +718,53 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === ' ') {
+        setSpaceHeld(false);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, [canvasState, drawingPoints, mode, selectedShape, dragNodeIdx, activeFloor, selectedShapeId, showExtrudeDialog, onExit, onSelectShape, updateFloorShapes]);
 
   // Confirm extrude
   const confirmExtrude = () => {
-    if (pendingPoints.length < 3 || !activeFloor) return;
+    if (pendingPoints.length < 3 || !activeFloor) {
+      console.warn('[TopViewCanvas] confirmExtrude: invalid state, pendingPoints=', pendingPoints.length, 'activeFloor=', !!activeFloor);
+      return;
+    }
+
+    // Deep copy points to prevent any reference issues
+    const copiedPoints = pendingPoints.map(p => ({ x: p.x, y: p.y }));
 
     const newShape: FloorShape = {
       id: `polyline-${Date.now()}-${polylineCounter++}`,
       type: 'polyline',
       params: {
-        points: pendingPoints,
+        points: copiedPoints,
         extrudeHeight: extrudeHeight,
         isClosed: true,
-        wwr: 0.35,
+        wwr: activeFloor.wwr || 0.35,
         glassType: 'Double',
         shadingType: 'None',
       },
       position: { x: 0, y: 0 },
       rotation: 0,
     };
+
+    console.log('[TopViewCanvas] confirmExtrude: creating polyline shape', {
+      id: newShape.id,
+      points: copiedPoints.length,
+      extrudeHeight,
+      floorId: activeFloorId,
+      existingShapes: activeFloor.shapes.length,
+      pointData: copiedPoints,
+    });
 
     const newShapes = [...activeFloor.shapes, newShape];
     updateFloorShapes(newShapes);
@@ -835,8 +878,37 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
 
         <div className="w-px h-6 bg-white/10" />
 
-        {/* Zoom */}
-        <span className="text-[10px] font-bold text-slate-500">{zoomPercent}%</span>
+        {/* Zoom controls */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setView(v => ({ ...v, scale: Math.max(1, v.scale * 0.8) }))}
+            className="w-6 h-6 rounded bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 text-[11px] font-bold flex items-center justify-center transition-all"
+            title="Zoom out"
+          >
+            −
+          </button>
+          <span className="text-[10px] font-bold text-slate-500 min-w-[36px] text-center">{zoomPercent}%</span>
+          <button
+            onClick={() => setView(v => ({ ...v, scale: Math.min(60, v.scale * 1.25) }))}
+            className="w-6 h-6 rounded bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 text-[11px] font-bold flex items-center justify-center transition-all"
+            title="Zoom in"
+          >
+            +
+          </button>
+        </div>
+
+        <div className="w-px h-6 bg-white/10" />
+
+        {/* Reset View */}
+        <button
+          onClick={() => setView({ offsetX: 0, offsetY: 0, scale: 8 })}
+          className="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-all border border-white/10"
+          title={t ? '重置視圖至原點' : 'Reset view to origin'}
+        >
+          ⌂ {t ? '原點' : 'Reset'}
+        </button>
+
+        <div className="w-px h-6 bg-white/10" />
 
         {/* Exit */}
         <button
@@ -857,8 +929,10 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
+          onContextMenu={(e) => e.preventDefault()}
           style={{
             cursor: isPanning ? 'grabbing' :
+              spaceHeld ? 'grab' :
               mode === 'draw' ? 'crosshair' :
                 dragNodeIdx !== null ? 'grabbing' :
                   dragShape ? 'move' : 'default'
@@ -877,7 +951,7 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
               }
             </p>
             <p className="text-[9px] text-slate-500 mt-0.5">
-              {t ? 'Esc 取消 · Ctrl+Z 回退' : 'Esc to cancel · Ctrl+Z to undo'}
+              {t ? 'Esc 取消 · Ctrl+Z 回退 · 右鍵/Space拖曳平移' : 'Esc to cancel · Ctrl+Z to undo · Right-click/Space to pan'}
             </p>
           </div>
         )}
@@ -933,26 +1007,34 @@ const TopViewCanvas: React.FC<TopViewCanvasProps> = ({
               </div>
             )}
 
-            {/* WWR */}
+            {/* Floor-level WWR */}
             <div className="pt-1 border-t border-white/10 space-y-0.5">
               <label className="text-[8px] font-black text-orange-400 uppercase">
-                {t ? '開窗率' : 'WWR'} {((selectedShape.params.wwr || 0.35) * 100).toFixed(0)}%
+                {t ? '開窗率' : 'WWR'} {((activeFloor?.wwr || 0.35) * 100).toFixed(0)}%
               </label>
               <input
                 type="range"
-                min="0"
-                max="0.9"
-                step="0.05"
-                value={selectedShape.params.wwr || 0.35}
+                min="5"
+                max="90"
+                step="1"
+                value={(activeFloor?.wwr || 0.35) * 100}
                 onChange={(e) => {
-                  if (activeFloor) {
-                    const newShapes = activeFloor.shapes.map(s =>
-                      s.id === selectedShapeId ? { ...s, params: { ...s.params, wwr: parseFloat(e.target.value) } } : s
-                    );
-                    updateFloorShapes(newShapes);
-                  }
+                  const newWwr = parseInt(e.target.value) / 100;
+                  // Update floor wwr AND all shapes' wwr on this floor
+                  onFloorsChange(floors.map(f =>
+                    f.id === activeFloorId
+                      ? {
+                          ...f,
+                          wwr: newWwr,
+                          shapes: f.shapes.map(s => ({
+                            ...s,
+                            params: { ...s.params, wwr: newWwr }
+                          }))
+                        }
+                      : f
+                  ));
                 }}
-                className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
+                className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-500"
               />
             </div>
           </div>

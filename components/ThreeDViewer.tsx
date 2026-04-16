@@ -182,6 +182,38 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
     return group;
   };
 
+  // Helper: Create ExtrudeGeometry mesh with dynamically-detected material assignment
+  // Inspects geometry groups to determine which is sides (more faces) vs caps (fewer faces)
+  const createExtrudeMesh = (
+    geo: THREE.ExtrudeGeometry,
+    facadeMat: THREE.Material,
+    capMat: THREE.Material
+  ): THREE.Mesh => {
+    const groups = geo.groups;
+    const materials: THREE.Material[] = [];
+
+    if (groups.length >= 2) {
+      // Find the group with the most faces — that's the side walls
+      let maxCount = 0;
+      let maxIdx = 0;
+      groups.forEach(g => {
+        if (g.count > maxCount) {
+          maxCount = g.count;
+          maxIdx = g.materialIndex;
+        }
+      });
+      // Assign: largest group = facades, rest = caps
+      for (let i = 0; i <= Math.max(...groups.map(g => g.materialIndex)); i++) {
+        materials[i] = (i === maxIdx) ? facadeMat : capMat;
+      }
+    } else {
+      // Single group or none — apply facade to everything
+      materials[0] = facadeMat;
+    }
+
+    return new THREE.Mesh(geo, materials);
+  };
+
   // Build shape mesh for a given shape + height
   const buildShapeMesh = (
     shape: { type: string; params: Record<string, any> },
@@ -266,8 +298,8 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         arcShape.absarc(0, 0, arcR - depth, arcAngle, 0, true);
 
         const geo = new THREE.ExtrudeGeometry(arcShape, { depth: height, bevelEnabled: false });
-        // ExtrudeGeometry groups: 0 = caps (top/bottom), 1 = sides (walls)
-        const mesh = new THREE.Mesh(geo, [isTopFloor ? roofMat : floorMat, facadeMat]);
+        const capMat = isTopFloor ? roofMat : floorMat;
+        const mesh = createExtrudeMesh(geo, facadeMat, capMat);
         mesh.rotation.x = -Math.PI / 2;
         group.add(mesh);
         break;
@@ -280,8 +312,8 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         const ellipseShape = new THREE.Shape();
         ellipseShape.ellipse(0, 0, majorR, minorR, 0, Math.PI * 2, false, 0);
         const geo = new THREE.ExtrudeGeometry(ellipseShape, { depth: height, bevelEnabled: false });
-        // ExtrudeGeometry groups: 0 = caps, 1 = sides
-        const mesh = new THREE.Mesh(geo, [isTopFloor ? roofMat : floorMat, facadeMat]);
+        const capMat = isTopFloor ? roofMat : floorMat;
+        const mesh = createExtrudeMesh(geo, facadeMat, capMat);
         mesh.rotation.x = -Math.PI / 2;
         group.add(mesh);
         break;
@@ -300,8 +332,8 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         fanShape.absarc(0, 0, innerR, fanAngle, 0, true);
 
         const geo = new THREE.ExtrudeGeometry(fanShape, { depth: height, bevelEnabled: false });
-        // ExtrudeGeometry groups: 0 = caps, 1 = sides
-        const mesh = new THREE.Mesh(geo, [isTopFloor ? roofMat : floorMat, facadeMat]);
+        const capMat = isTopFloor ? roofMat : floorMat;
+        const mesh = createExtrudeMesh(geo, facadeMat, capMat);
         mesh.rotation.x = -Math.PI / 2;
         group.add(mesh);
         break;
@@ -323,9 +355,21 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
 
       case 'polyline': {
         const pts = p.points;
-        if (pts && pts.length >= 3) {
+        if (pts && pts.length >= 3 && p.isClosed !== false) {
+          console.log('[ThreeDViewer] Rendering polyline shape:', pts.length, 'points, extrudeHeight:', p.extrudeHeight || height);
+
+          // Validate points are not degenerate (all same point)
+          const hasArea = pts.some((pt: {x: number; y: number}, i: number) => {
+            if (i === 0) return false;
+            return Math.abs(pt.x - pts[0].x) > 0.01 || Math.abs(pt.y - pts[0].y) > 0.01;
+          });
+
+          if (!hasArea) {
+            console.warn('[ThreeDViewer] Polyline has no area (degenerate), skipping');
+            break;
+          }
+
           const polyShape = new THREE.Shape();
-          // polyline points are in XY 2D space, map to XZ in Three.js (X → X, Y → -Z)
           polyShape.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) {
             polyShape.lineTo(pts[i].x, pts[i].y);
@@ -337,11 +381,15 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
             depth: extH,
             bevelEnabled: false,
           });
-          // ExtrudeGeometry groups: 0 = caps, 1 = sides
-          const mesh = new THREE.Mesh(geo, [isTopFloor ? roofMat : floorMat, facadeMat]);
-          // ExtrudeGeometry extrudes along Z by default, rotate so it goes along Y
+
+          // Use dynamic material assignment helper
+          const capMat = isTopFloor ? roofMat : floorMat;
+          const mesh = createExtrudeMesh(geo, facadeMat, capMat);
           mesh.rotation.x = -Math.PI / 2;
           group.add(mesh);
+          console.log('[ThreeDViewer] Polyline mesh added to group:', group.children.length, 'children');
+        } else {
+          console.warn('[ThreeDViewer] Polyline NOT rendered: pts=', pts?.length, 'isClosed=', p.isClosed);
         }
         break;
       }
@@ -791,10 +839,26 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         let maxW = 0, maxD = 0;
         floor.shapes.forEach(shape => {
           const p = shape.params;
-          const w = p.width || p.l1 || (p.radius ? p.radius * 2 : 0) || (p.majorRadius ? p.majorRadius * 2 : 0) || (p.outerRadius ? p.outerRadius * 2 : 0) || 40;
-          const d = p.length || p.w1 || (p.radius ? p.radius * 2 : 0) || (p.minorRadius ? p.minorRadius * 2 : 0) || (p.outerRadius ? p.outerRadius * 2 : 0) || 30;
-          maxW = Math.max(maxW, w);
-          maxD = Math.max(maxD, d);
+          if (shape.type === 'polyline' && p.points && p.points.length >= 3) {
+            // Calculate bounding box from polyline points
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const pt of p.points) {
+              minX = Math.min(minX, pt.x);
+              maxX = Math.max(maxX, pt.x);
+              minY = Math.min(minY, pt.y);
+              maxY = Math.max(maxY, pt.y);
+            }
+            const polyW = maxX - minX;
+            const polyD = maxY - minY;
+            // Use the absolute extent (points are in world coordinates)
+            maxW = Math.max(maxW, Math.max(Math.abs(maxX), Math.abs(minX)) * 2, polyW);
+            maxD = Math.max(maxD, Math.max(Math.abs(maxY), Math.abs(minY)) * 2, polyD);
+          } else {
+            const w = p.width || p.l1 || (p.radius ? p.radius * 2 : 0) || (p.majorRadius ? p.majorRadius * 2 : 0) || (p.outerRadius ? p.outerRadius * 2 : 0) || 40;
+            const d = p.length || p.w1 || (p.radius ? p.radius * 2 : 0) || (p.minorRadius ? p.minorRadius * 2 : 0) || (p.outerRadius ? p.outerRadius * 2 : 0) || 30;
+            maxW = Math.max(maxW, w);
+            maxD = Math.max(maxD, d);
+          }
         });
         if (maxW === 0) maxW = 40;
         if (maxD === 0) maxD = 30;
@@ -817,6 +881,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         floorGroup.add(slab);
 
         // Shapes
+        console.log(`[ThreeDViewer] Floor "${floor.name}" (${floor.id}): ${floor.shapes.length} shapes`, floor.shapes.map(s => ({ id: s.id, type: s.type, hasPoints: !!(s.params.points?.length) })));
         floor.shapes.forEach(shape => {
           const wwr = floor.wwr || shape.params.wwr || 0.3;
           const shadingType = shape.params.shadingType || 'None';

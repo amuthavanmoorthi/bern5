@@ -88,6 +88,33 @@ const calculateGeometryMetrics = (objects: GeometryObject[]) => {
                 objRoofArea = 0.5 * sides * circumR * circumR * Math.sin(2 * Math.PI / sides);
                 break;
             }
+            case 'polyline': {
+                const pts = p.points;
+                if (pts && pts.length >= 3) {
+                    // Shoelace formula for area
+                    let area = 0;
+                    for (let i = 0; i < pts.length; i++) {
+                        const j = (i + 1) % pts.length;
+                        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+                    }
+                    objRoofArea = Math.abs(area) / 2;
+
+                    // Perimeter-based wall area
+                    const extH = p.extrudeHeight || height;
+                    let perimeter = 0;
+                    for (let i = 0; i < pts.length; i++) {
+                        const j = (i + 1) % pts.length;
+                        const dx = pts[j].x - pts[i].x;
+                        const dy = pts[j].y - pts[i].y;
+                        perimeter += Math.sqrt(dx * dx + dy * dy);
+                    }
+                    objWallArea = perimeter * extH;
+                } else {
+                    objWallArea = 0;
+                    objRoofArea = 0;
+                }
+                break;
+            }
             default: {
                 const width = p.width || 40, length = p.length || 30;
                 objWallArea = (width + length) * 2 * height;
